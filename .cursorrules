@@ -1,0 +1,337 @@
+# ============================================================
+# .cursorrules — taller-backend
+# Spring Boot 4 · Java 25 · PostgreSQL · JWT · WebSockets
+# Sistema de Gestión para Taller Mecánico
+# ============================================================
+# Este archivo define el contrato de calidad del proyecto.
+# Cursor DEBE seguir estas reglas en todo código que genere
+# o sugiera, sin excepción. Antes de generar cualquier clase,
+# lee estas reglas completas.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. STACK Y VERSIONES — no negociables
+# ------------------------------------------------------------
+
+- Java 25. Usa sus características modernas:
+  - Records para DTOs inmutables (no clases con getters/setters)
+  - Pattern matching con switch expressions
+  - Text blocks para queries JPQL largas o SQL en @Query
+  - Sealed classes para jerarquías cerradas (ej. tipos de excepción)
+- Spring Boot 4.0 sobre Spring Framework 7. Usa jakarta.* en todos los imports,
+  nunca javax.*. Undertow fue removido en Spring Boot 4 — el servidor embebido
+  es siempre Tomcat.
+- Spring Data JPA con Hibernate. Flyway para migraciones — nunca
+  spring.jpa.hibernate.ddl-auto=update en perfil distinto a dev local.
+- Spring Security 7 con JWT stateless.
+- PostgreSQL 16+. Tipos nativos de Postgres cuando corresponda
+  (ej. ENUM en BD, TEXT en vez de VARCHAR sin límite real).
+
+
+# ------------------------------------------------------------
+# 2. ARQUITECTURA POR CAPAS — por feature, no global
+# ------------------------------------------------------------
+
+# Estructura obligatoria para cada feature:
+#
+# com.tallerapp.{feature}/
+# ├── controller/    → solo HTTP: recibir, validar, delegar, responder
+# ├── service/       → interfaz pública del módulo
+# ├── service/impl/  → lógica de negocio real, @Transactional aquí
+# ├── repository/    → JpaRepository + queries propias
+# ├── model/         → @Entity, enums, value objects del dominio
+# └── dto/           → Request, Response, Mapper
+#
+# Features existentes: usuario, vehiculo, ordentrabajo, repuesto,
+# cotizacion, notificacion, media, dashboard, websocket
+# Si generas un feature nuevo, respeta exactamente esta estructura.
+
+- El controller NUNCA contiene lógica de negocio. Solo:
+  1. Recibir la request HTTP
+  2. Validar con @Valid
+  3. Extraer el usuario autenticado con @AuthenticationPrincipal si aplica
+  4. Llamar al service
+  5. Devolver ResponseEntity con el código HTTP correcto
+
+- El service es una INTERFAZ. La implementación va en service/impl/
+  con el sufijo Impl. Esto permite mockear el service en tests
+  de controller sin levantar el contexto completo.
+
+- El repository solo contiene queries. Cero lógica. Cero if. Solo
+  métodos derivados de Spring Data o @Query/@NativeQuery cuando
+  la query derivada sería ilegible.
+
+- NUNCA devuelvas una @Entity directamente desde un controller.
+  Siempre usa un DTO de Response. Las razones son:
+  1. Evitar exposición de campos sensibles (password_hash, etc.)
+  2. Evitar LazyInitializationException al serializar relaciones JPA
+  3. Desacoplar el contrato de API del modelo de persistencia
+
+
+# ------------------------------------------------------------
+# 3. INYECCIÓN DE DEPENDENCIAS
+# ------------------------------------------------------------
+
+- Usa @RequiredArgsConstructor de Lombok + campos final.
+  NUNCA @Autowired en campos — no es testeable sin contexto Spring.
+- Si no usas Lombok en algún caso específico, usa constructor explícito.
+- Ejemplo correcto:
+
+  @Service
+  @RequiredArgsConstructor
+  public class OrdenTrabajoServiceImpl implements OrdenTrabajoService {
+      private final OrdenTrabajoRepository repository;
+      private final RepuestoService repuestoService;
+      // ...
+  }
+
+
+# ------------------------------------------------------------
+# 4. DTOs — Records de Java 25
+# ------------------------------------------------------------
+
+- Los DTOs son records, no clases. Son inmutables por diseño.
+- Convención de nombres:
+  - Request:  CrearOrdenRequest, ActualizarRepuestoRequest, CambiarEstadoRequest
+  - Response: OrdenResponse, RepuestoResponse, UsuarioResponse
+  - Internos: OrdenResumenDto (proyecciones para dashboard)
+- La validación va con anotaciones Jakarta Bean Validation en los records:
+
+  public record CrearOrdenRequest(
+      @NotNull(message = "El vehículo es obligatorio")
+      Long vehiculoId,
+      @NotBlank(message = "Describe el problema del vehículo")
+      @Size(max = 1000)
+      String descripcionProblema,
+      LocalDateTime fechaEstimadaEntrega
+  ) {}
+
+- El Mapper (OrdenTrabajoMapper) es un @Component con métodos
+  toResponse(entity) y toEntity(request). NO uses MapStruct a menos
+  que ya lo tengas configurado — agrega complejidad de compilación
+  innecesaria para este proyecto.
+
+
+# ------------------------------------------------------------
+# 5. TRANSACCIONES Y CONSISTENCIA
+# ------------------------------------------------------------
+
+- @Transactional va SIEMPRE en la capa service/impl, nunca en
+  controller ni repository.
+- Toda operación que modifique más de una tabla DEBE ser @Transactional.
+  Ejemplo: agregar un repuesto a una orden descuenta stock Y registra
+  el movimiento de inventario Y actualiza el costo total de la orden.
+  Las tres cosas o ninguna.
+- Para operaciones de solo lectura: @Transactional(readOnly = true).
+  Mejora el performance de Hibernate (no hace dirty checking).
+- El orden de operaciones dentro de @Transactional importa:
+  Primero valida, luego modifica entidades, luego llama a servicios
+  externos (Twilio, Cloudinary). Los externos no se pueden revertir
+  si el rollback ocurre después de que salieron.
+
+
+# ------------------------------------------------------------
+# 6. SEGURIDAD Y AUTORIZACIÓN
+# ------------------------------------------------------------
+
+- JWT stateless. Access token (15 min) + Refresh token (7 días).
+  Los refresh tokens se persisten en BD para poder revocarlos.
+- Autorización granular con @PreAuthorize en el controller:
+  - @PreAuthorize("hasRole('ADMIN')") para operaciones de jefe
+  - @PreAuthorize("hasAnyRole('ADMIN', 'MECANICO')") para técnicos
+  - @PreAuthorize("hasRole('CLIENTE')") para el portal cliente
+  - @PreAuthorize("@ordenSecurity.esPropietario(#id, authentication)")
+    para que el cliente solo vea SUS órdenes (método de seguridad custom)
+- NUNCA expongas endpoints sin autenticación excepto:
+  POST /api/auth/login, POST /api/auth/register, GET /actuator/health
+- CORS configurado explícitamente con los orígenes permitidos
+  (el dominio de producción de Render + localhost:4200 para dev).
+  Nunca allowedOrigins("*") en producción.
+- Los passwords se hashean con BCryptPasswordEncoder (strength 12).
+  Nunca MD5, SHA-1, ni texto plano.
+
+
+# ------------------------------------------------------------
+# 7. MANEJO DE ERRORES
+# ------------------------------------------------------------
+
+- Un único @RestControllerAdvice en common/exception/ maneja TODOS
+  los errores. Los controllers no tienen try/catch.
+- Excepciones de dominio propias (en common/exception/):
+  - RecursoNoEncontradoException → 404
+  - AccesoNoPermitidoException → 403
+  - TransicionInvalidaException → 409 (Conflict)
+  - StockInsuficienteException → 422 (Unprocessable Entity)
+  - NegocioException → 400 (para validaciones de negocio)
+- El response de error siempre tiene la misma estructura:
+
+  {
+    "timestamp": "2026-07-01T10:30:00",
+    "status": 400,
+    "error": "Solicitud inválida",
+    "mensaje": "No se puede pasar de ENTREGADO a EN_REPARACION",
+    "path": "/api/ordenes/42/estado"
+  }
+
+- @ControllerAdvice captura también MethodArgumentNotValidException
+  (@Valid) y devuelve la lista de errores de campo en formato estándar.
+
+
+# ------------------------------------------------------------
+# 8. MÁQUINA DE ESTADOS — OrdenTrabajo
+# ------------------------------------------------------------
+
+- Los estados van en el enum EstadoOrden.
+- La lógica de transiciones válidas vive en el ENUM, no en el service:
+
+  public enum EstadoOrden {
+      RECIBIDO, DIAGNOSTICO, EN_REPARACION, LISTO_ENTREGA, ENTREGADO, CANCELADO;
+
+      public boolean puedeTransicionarA(EstadoOrden nuevo) {
+          return switch (this) {
+              case RECIBIDO      -> nuevo == DIAGNOSTICO || nuevo == CANCELADO;
+              case DIAGNOSTICO   -> nuevo == EN_REPARACION || nuevo == CANCELADO;
+              case EN_REPARACION -> nuevo == LISTO_ENTREGA || nuevo == CANCELADO;
+              case LISTO_ENTREGA -> nuevo == ENTREGADO;
+              case ENTREGADO, CANCELADO -> false;
+          };
+      }
+  }
+
+- El service valida con puedeTransicionarA() y lanza
+  TransicionInvalidaException si la transición no es válida.
+- Después de cada cambio de estado exitoso, el service dispara
+  el evento de notificación (WhatsApp + WebSocket).
+
+
+# ------------------------------------------------------------
+# 9. WEBSOCKETS
+# ------------------------------------------------------------
+
+- Usar STOMP sobre SockJS (spring-boot-starter-websocket).
+- Endpoint de conexión: /ws
+- Tópicos de suscripción:
+  - /topic/ordenes/{id}     → actualización de una orden específica
+  - /topic/inventario/alertas → alerta cuando stock baja del mínimo
+  - /user/queue/notificaciones → notificaciones personales (por usuario)
+- El NotificacionService publica con SimpMessagingTemplate.
+- La autenticación WebSocket usa el mismo JWT del canal REST
+  (se pasa como parámetro de query o header al conectar).
+
+
+# ------------------------------------------------------------
+# 10. PERSISTENCIA Y MIGRACIONES
+# ------------------------------------------------------------
+
+- Flyway gestiona el esquema. Archivos en resources/db/migration/:
+  V1__init_schema.sql, V2__add_cotizaciones.sql, etc.
+  Numeración secuencial, nombres descriptivos en español.
+- NUNCA modifiques un archivo de migración ya aplicado —
+  siempre crea uno nuevo (V_n+1).
+- Índices importantes (ya en V1): usuarios.email, vehiculos.placa,
+  repuestos.sku, ordenes_trabajo.estado, ordenes_trabajo.mecanico_id.
+- Para guardar precios históricos de repuestos en órdenes, usa el campo
+  precio_unitario_momento en orden_repuestos (snapshot del precio
+  al momento de uso — si el precio del repuesto cambia después,
+  el histórico no se altera).
+- fetch = LAZY en todas las relaciones @ManyToOne y @OneToMany.
+  Carga explícita con JOIN FETCH en las queries que lo necesiten.
+  NUNCA fetch = EAGER — causa N+1 queries y out-of-memory en listas.
+
+
+# ------------------------------------------------------------
+# 11. TESTS — pirámide obligatoria
+# ------------------------------------------------------------
+
+- Cobertura mínima: 80% de líneas en lógica de negocio (service/impl).
+  JaCoCo verifica esto en la fase verify del build — si baja del 80%,
+  el build falla. No negociable.
+
+- Tests unitarios (JUnit 5 + Mockito):
+  - Prueban un solo service/impl con todos sus colaboradores mockeados.
+  - Un test por regla de negocio, no por método.
+  - Nombre: metodoProbado_condicion_resultadoEsperado()
+    Ej: cambiarEstado_transicionInvalida_lanzaExcepcion()
+
+- Tests de slice de controller (@WebMvcTest):
+  - El service está mockeado con @MockitoBean.
+  - Verifican: validación de request, código HTTP correcto,
+    estructura del JSON de response, acceso denegado sin JWT.
+
+- Tests de integración (Testcontainers + @SpringBootTest):
+  - Levantan un Postgres real en contenedor Docker.
+  - Prueban flujos completos: desde el HTTP request
+    hasta verificar el estado real en la BD.
+  - Mínimo: flujo crear orden + agregar repuesto + verificar
+    descuento de stock real.
+
+- Perfil "test": Flyway corre migraciones en el Postgres de Testcontainers.
+  El endpoint /api/test/seed existe SOLO en perfil test — puebla datos
+  para Cypress E2E. Nunca activo en producción.
+
+
+# ------------------------------------------------------------
+# 12. CONVENCIONES DE CÓDIGO
+# ------------------------------------------------------------
+
+- Idioma del dominio: ESPAÑOL. Variables, métodos, clases y comentarios
+  en español (excepto términos técnicos sin traducción natural: DTO, JWT,
+  repository, service).
+  Correcto:   ordenTrabajo, clienteId, calcularCostoTotal()
+  Incorrecto: workOrder, customerId, calculateTotalCost()
+
+- Javadoc obligatorio en todos los métodos públicos de service (la interfaz).
+  El Javadoc describe la REGLA DE NEGOCIO, no la implementación técnica.
+  Correcto:   /** Cambia el estado de una orden. Lanza TransicionInvalidaException
+               si el nuevo estado no es alcanzable desde el estado actual. */
+  Incorrecto: /** Actualiza el campo estado de la entidad OrdenTrabajo. */
+
+- Lombok permitido: @RequiredArgsConstructor, @Getter, @ToString,
+  @EqualsAndHashCode, @Builder (en DTOs complejos), @Slf4j.
+  NO usar @Data en entidades JPA — causa problemas con equals/hashCode
+  en entidades con relaciones bidireccionales.
+
+- OpenAPI/Swagger: anota todos los endpoints con @Operation y @ApiResponse.
+  springdoc-openapi genera la documentación en /swagger-ui.html.
+
+- Logging con @Slf4j (Lombok). INFO para eventos de negocio importantes
+  (orden creada, estado cambiado). DEBUG para detalles internos.
+  ERROR solo para excepciones reales. NUNCA System.out.println.
+
+- Variables de entorno para todos los secretos: JWT_SECRET, DB_PASSWORD,
+  CLOUDINARY_URL, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN.
+  NUNCA valores reales en application.yml commiteado a Git.
+  El .gitignore excluye application-prod.yml y .env.
+
+
+# ------------------------------------------------------------
+# 13. PERFILES DE SPRING
+# ------------------------------------------------------------
+
+- dev:  BD local Docker, Flyway activo, logs DEBUG, Swagger visible.
+- test: Testcontainers provee la BD, endpoint /api/test/seed activo,
+        datos de prueba predefinidos.
+- prod: BD en Render/Railway, logs INFO, Swagger deshabilitado,
+        HTTPS obligatorio, headers de seguridad activos
+        (HSTS, X-Frame-Options, etc.).
+
+
+# ------------------------------------------------------------
+# 14. LO QUE CURSOR NO DEBE HACER EN ESTE PROYECTO
+# ------------------------------------------------------------
+
+- NO usar javax.* — solo jakarta.*
+- NO usar @Autowired en campos
+- NO devolver @Entity desde controllers
+- NO poner @Transactional en repositories ni controllers
+- NO usar ddl-auto=update en perfiles no-dev
+- NO hardcodear secretos (JWT_SECRET, passwords, API keys)
+- NO crear un paquete global "controller" con todos los controllers —
+  cada feature tiene su propia carpeta controller/
+- NO generar un módulo nuevo sin respetar la estructura
+  controller/service/service-impl/repository/model/dto/
+- NO poner lógica de negocio en el controller
+- NO usar fetch = EAGER en relaciones JPA
+- NO modificar archivos de migración Flyway ya existentes
+- NO omitir el Javadoc en métodos públicos de interfaces de service
