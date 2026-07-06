@@ -1,0 +1,22 @@
+services:
+
+  app:
+    build: .
+    ports:
+    - "8000:8000"
+  postgres:
+    image: postgres:16-alpine
+    container_name: mechply-postgres
+    environment:
+      POSTGRES_DB: mechplydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mechplydb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
