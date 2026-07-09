@@ -48,5 +48,16 @@ public class UserMapper {
         );
     }
 
+    public void updateEntityFromRequest(UserRequestDTO dto, User user) {
+        if (dto == null || user == null) {
+            return;
+        }
+
+        user.setName(dto.name());
+        user.setEmail(dto.email());
+        user.setPhoneNumber(dto.phoneNumber());
+    }
 
 }
+
+
