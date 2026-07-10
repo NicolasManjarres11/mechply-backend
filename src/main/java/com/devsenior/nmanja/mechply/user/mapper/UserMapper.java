@@ -17,8 +17,9 @@ public class UserMapper {
             return null;
         }
 
+        //TODO: Agregar Workshop ID, validar si agregarlo en la lógica de negocio o en el mapper. Por ahora lo omitimos
+
         return User.builder()
-                .workshopId(dto.workshopId())
                 .name(dto.name())
                 .email(dto.email())
                 .password(dto.password())
@@ -38,7 +39,6 @@ public class UserMapper {
 
         return new UserResponseDTO(
                 user.getId(),
-                user.getWorkshopId(),
                 user.getName(),
                 user.getEmail(),
                 user.getPhoneNumber(),

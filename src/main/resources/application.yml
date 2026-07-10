@@ -13,3 +13,9 @@ spring:
     jpa:
         hibernate:
             ddl-auto: validate
+    
+    security:
+        jwt:
+            secret: my-strong-secret-1234567890
+            access-token-expiration-ms: 900000
+            refresh-token-expiration-ms: 604800000

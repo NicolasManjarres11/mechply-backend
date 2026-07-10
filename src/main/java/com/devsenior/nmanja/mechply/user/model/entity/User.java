@@ -4,15 +4,19 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 import com.devsenior.nmanja.mechply.user.model.enums.Role;
+import com.devsenior.nmanja.mechply.workshop.model.entity.Workshop;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -36,7 +40,9 @@ public class User {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    private UUID workshopId; // FK pendiente hacia workshop.id (tabla aún no creada en este sprint), se mantendrá opcional, no todos los usuarios son mecánicos que tienen un taller.
+    @ManyToOne(optional = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "workshop_id")
+    private Workshop workshop; // FK pendiente hacia workshop.id (tabla aún no creada en este sprint), se mantendrá opcional, no todos los usuarios son mecánicos que tienen un taller.
 
 
     @Column(nullable = false)

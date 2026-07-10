@@ -6,8 +6,8 @@ import java.util.UUID;
 import com.devsenior.nmanja.mechply.user.model.enums.Role;
 
 public record UserResponseDTO(
+        //TODO: Agregar Workshop ID, validar si agregarlo en la lógica de negocio o en el mapper. Por ahora lo omitimos
         UUID id,
-        UUID workshopId,
         String name,
         String email,
         String phoneNumber,
